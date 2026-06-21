@@ -1,3 +1,6 @@
+# Numerical / array support (also pulled in by opencv, but declared explicitly)
+numpy>=1.24.0
+
 # Audio capture + Deepgram streaming
 sounddevice>=0.4.7
 websockets>=13.0
