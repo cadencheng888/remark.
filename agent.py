@@ -180,10 +180,18 @@ def _specific_title_from_args(args: dict) -> str:
         participants = [participants]
     participants = [p.strip() for p in participants if isinstance(p, str) and p.strip()]
 
-    # Add one participant to the title when it sounds natural and is not already included.
+    # Fold the first participant into the title for specificity ("Dinner" +
+    # "Alex" -> "Dinner with Alex"), unless they're already named in it. Skip
+    # only for Call (the person is the call) and free-form titles that clearly
+    # already describe who/what (contain a space and aren't a bare canonical noun).
     if participants and " with " not in title.lower():
         person = participants[0]
-        if person.lower() not in title.lower() and title in EVENT_TITLE_MAP.values():
+        bare_canonical = title in EVENT_TITLE_MAP.values()
+        if (
+            person.lower() not in title.lower()
+            and event_type != "call"
+            and (bare_canonical or " " not in title.strip())
+        ):
             title = f"{title} with {person}"
 
     return title
@@ -360,13 +368,15 @@ TOOLS = [
     {
         "name": "clarification_needed",
         "description": (
-            "Use ONLY when the wearer issues a command with a pronoun (it, them, "
-            "that, those, these) or an underspecified target AND you cannot "
-            "confidently resolve what they mean from the recent entities/context — "
-            "especially for high-stakes actions (buying, ordering, sending). Instead "
-            "of guessing, ask. Provide a short question and 2-4 concrete options "
-            "drawn from the recent entities/context. If the target IS clear (only one "
-            "plausible match), do NOT use this — just act."
+            "Use ONLY for perform_action commands (buying, ordering, sending) where "
+            "the wearer uses a pronoun (it, them, that, those, these) or an "
+            "underspecified target AND you cannot confidently resolve what they mean "
+            "from the recent entities/context. Provide a short question and 2-4 "
+            "concrete options drawn from the recent entities/context. If the target "
+            "IS clear (only one plausible match), do NOT use this — just act. "
+            "NEVER use this for reschedule_event or cancel_event — for those, always "
+            "act on the most recently created event (or the one whose title the "
+            "wearer names); never ask which event."
         ),
         "input_schema": {
             "type": "object",
@@ -506,6 +516,7 @@ If a plan that was already created is moved to a new time (not cancelled), call 
 - "actually let's do it an hour later"
 - "same plan, just tomorrow instead"
 Pass event_description (e.g. "dinner") if they say which plan; otherwise the most recent event is moved. Only create a brand-new event if the plan is genuinely a different one.
+NEVER ask which event to reschedule or cancel. Do NOT call clarification_needed for reschedule_event or cancel_event. If the wearer doesn't name a specific event, just act on the most recently created one. If they do name one (e.g. "move my dinner"), pass it as event_description and the matching event is used.
 
 PROPOSALS VS COMMITMENTS:
 Be EAGER to capture plans. If a specific activity AND a concrete time/date are mentioned, CREATE the event immediately — you do NOT need to hear explicit agreement. A proposal with a real time ("wanna get Shake Shack tomorrow at 7?", "dinner at 7 tonight?") is enough to act on; the wearer can always cancel later.
