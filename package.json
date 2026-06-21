@@ -1,0 +1,19 @@
+{
+  "name": "intent-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file=.env src/cli.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@browserbasehq/stagehand": "^3.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

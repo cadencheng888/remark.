@@ -1,5 +1,6 @@
 # Secrets / config
 .env
+.env.example
 
 # Google OAuth
 credentials.json
@@ -16,3 +17,5 @@ __pycache__/
 
 # Output
 deals_results.json
+
+node_modules/
