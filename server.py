@@ -27,7 +27,7 @@ import geo
 import router_client
 from demo import CONVO
 from face_gate import FaceGate
-from transcribe import stream_microphone
+from transcribe import stream_microphone, stream_from_queue
 
 # --- Calendar mode: real if credentials exist, otherwise a mock so the HUD
 #     demos immediately (before Google is connected). ---
@@ -93,6 +93,7 @@ _transcript: list[dict] = []   # each: {"t": text, "ts": monotonic}
 _last_speech = 0.0
 _dirty = False
 _mic_task: asyncio.Task | None = None
+_ray_ban_audio_active = False   # True while /ws/audio-in is connected; bypasses face gate
 
 
 async def _stop_listening():
@@ -169,7 +170,7 @@ def on_final(text: str):
     if STOP_KEYWORD and STOP_KEYWORD.lower() in text.lower():
         asyncio.create_task(_stop_listening())
         return
-    if CAPTURE_MODE == "conversation" and not face_gate.is_present():
+    if CAPTURE_MODE == "conversation" and not _ray_ban_audio_active and not face_gate.is_present():
         return  # no face in view — not capturing
     now = time.monotonic()
     _transcript.append({"t": text, "ts": now})
@@ -179,7 +180,7 @@ def on_final(text: str):
 
 
 def on_interim(text: str):
-    if CAPTURE_MODE == "conversation" and not face_gate.is_present():
+    if CAPTURE_MODE == "conversation" and not _ray_ban_audio_active and not face_gate.is_present():
         return
     asyncio.create_task(broadcast({"type": "caption", "final": False, "text": text}))
 
@@ -396,6 +397,139 @@ async def ws_endpoint(ws: WebSocket):
                 await broadcast({"type": "status", "text": "idle"})
     except WebSocketDisconnect:
         clients.discard(ws)
+
+
+@app.websocket("/ws/audio-in")
+async def audio_in_endpoint(ws: WebSocket):
+    """Raw PCM16 audio from the Ray-Ban relay → Deepgram → flusher → agent.
+
+    Protocol (from WeMightBeCooked/server.py):
+      1. JSON  {"type": "audio_config", "sample_rate": N}
+      2. binary chunks of PCM16 mono audio
+      3. JSON  {"type": "audio_stop"}  or just disconnect when done
+    """
+    global _ray_ban_audio_active
+    await ws.accept()
+    _ray_ban_audio_active = True
+    print("Ray-Ban audio relay connected")
+    await broadcast({"type": "status", "text": "listening"})
+    await broadcast({"type": "rayban", "connected": True})
+
+    audio_queue: asyncio.Queue = asyncio.Queue()
+    stream_task: asyncio.Task | None = None
+
+    async def _start_stream(sample_rate: int):
+        nonlocal stream_task, audio_queue
+        if stream_task and not stream_task.done():
+            await audio_queue.put(None)
+            stream_task.cancel()
+        audio_queue = asyncio.Queue()
+        stream_task = asyncio.create_task(
+            stream_from_queue(
+                on_final, on_interim,
+                audio_queue=audio_queue,
+                sample_rate=sample_rate,
+                on_level=on_level,
+                on_entities=on_entities,
+            )
+        )
+        # Start the flusher if the Mic button was never pressed
+        global _mic_task
+        if _mic_task is None or _mic_task.done():
+            _mic_task = asyncio.create_task(flusher())
+
+    try:
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if "text" in message:
+                import json as _json
+                data = _json.loads(message["text"])
+                if data.get("type") == "audio_config":
+                    await _start_stream(int(data.get("sample_rate", 16000)))
+                elif data.get("type") == "audio_stop":
+                    await audio_queue.put(None)
+            elif "bytes" in message:
+                await audio_queue.put(message["bytes"])
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _ray_ban_audio_active = False
+        await audio_queue.put(None)
+        if stream_task:
+            stream_task.cancel()
+        print("Ray-Ban audio relay disconnected")
+        await broadcast({"type": "rayban", "connected": False})
+        await broadcast({"type": "status", "text": "idle"})
+
+
+@app.websocket("/ws/iphone")
+async def iphone_endpoint(ws: WebSocket):
+    """iPhone / Ray-Ban audio+video directly on port 8000 — no relay needed.
+
+    Identical protocol to /ws/audio-in plus optional video frames:
+      1. JSON  {"type": "audio_config", "sample_rate": N}
+      2. binary chunks of PCM16 mono audio
+      3. JSON  {"type": "image", "image_base64": "<jpeg>"}   (optional, ignored by HUD)
+      4. JSON  {"type": "audio_stop"}  or just disconnect
+    """
+    global _ray_ban_audio_active
+    await ws.accept()
+    _ray_ban_audio_active = True
+    print("iPhone connected on /ws/iphone")
+    await broadcast({"type": "status", "text": "listening"})
+    await broadcast({"type": "rayban", "connected": True})
+
+    audio_queue: asyncio.Queue = asyncio.Queue()
+    stream_task: asyncio.Task | None = None
+
+    async def _start_stream(sample_rate: int):
+        nonlocal stream_task, audio_queue
+        if stream_task and not stream_task.done():
+            await audio_queue.put(None)
+            stream_task.cancel()
+        audio_queue = asyncio.Queue()
+        stream_task = asyncio.create_task(
+            stream_from_queue(
+                on_final, on_interim,
+                audio_queue=audio_queue,
+                sample_rate=sample_rate,
+                on_level=on_level,
+                on_entities=on_entities,
+            )
+        )
+        global _mic_task
+        if _mic_task is None or _mic_task.done():
+            _mic_task = asyncio.create_task(flusher())
+
+    try:
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if "text" in message:
+                import json as _json
+                data = _json.loads(message["text"])
+                msg_type = data.get("type")
+                if msg_type == "audio_config":
+                    await _start_stream(int(data.get("sample_rate", 16000)))
+                elif msg_type == "audio_stop":
+                    await audio_queue.put(None)
+                # video frames (type == "image") are silently dropped — the HUD
+                # uses the laptop webcam for the face mesh overlay
+            elif "bytes" in message:
+                await audio_queue.put(message["bytes"])
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _ray_ban_audio_active = False
+        await audio_queue.put(None)
+        if stream_task:
+            stream_task.cancel()
+        print("iPhone disconnected from /ws/iphone")
+        await broadcast({"type": "rayban", "connected": False})
+        await broadcast({"type": "status", "text": "idle"})
 
 
 app.mount("/assets", StaticFiles(directory="web/dist/assets"), name="assets")

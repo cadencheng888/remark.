@@ -9,7 +9,7 @@ enum InputMode: String, CaseIterable, Identifiable {
 
 struct StreamingDemoView: View {
     @State private var host: String = "192.168.0.119"
-    @State private var portText: String = "5050"
+    @State private var portText: String = "8000"
     @State private var inputMode: InputMode = .iPhone
     @State private var log: [String] = []
 

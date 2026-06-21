@@ -142,7 +142,7 @@ function ActionCard({ c }) {
 
 export default function App() {
   const { state, send } = useAgentSocket()
-  const { status, calMode, capMode, face, finals, interim, level, entities, cards, thinking, clarify, ttl, location } = state
+  const { status, calMode, capMode, face, rayban, finals, interim, level, entities, cards, thinking, clarify, ttl, location } = state
   const [camOpen, setCamOpen] = useState(false)
 
   const st = STATUS[status] || STATUS.idle
@@ -191,6 +191,11 @@ export default function App() {
         </div>
 
         <div className="flex items-center justify-end gap-2">
+          <Chip color={rayban ? '#a78bfa' : '#3f3f46'}>
+            <span className={rayban ? 'text-violet-300/90' : 'text-zinc-600'}>
+              {rayban ? '👓 glasses' : '👓 no glasses'}
+            </span>
+          </Chip>
           {capMode === 'conversation' && <Chip color={fm.c}>{fm.l}</Chip>}
           <span className="flex items-center gap-1.5 text-[12px] text-zinc-400 px-1">
             <Dot color={st.c} pulse={st.pulse} /> {st.l}

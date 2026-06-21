@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Boot the whole app. Usage:
-#   ./run.sh           start the server (uses the existing web build)
+# Boot the whole app in one terminal.
+# Usage:
+#   ./run.sh           start everything (uses existing web build)
 #   ./run.sh --build   rebuild the React HUD first, then start
 set -e
 cd "$(dirname "$0")"
@@ -12,21 +13,36 @@ if [ "$1" = "--build" ]; then
   (cd web && npm run build)
 fi
 
-# Start the agentic intent router (TS) so perform_action intents actually
-# execute. Needs `npm install` once. We keep its PID and stop it on exit.
-ROUTER_PID=""
+# ── kill stale processes ──────────────────────────────────────────────────────
+lsof -ti tcp:8000 | xargs kill -9 2>/dev/null || true
+lsof -ti tcp:8788 | xargs kill -9 2>/dev/null || true
+
+PIDS=()
+cleanup() { for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done }
+trap cleanup EXIT
+
+# ── intent router (TypeScript, port 8788) ────────────────────────────────────
 if [ -d node_modules ]; then
-  lsof -ti tcp:8788 | xargs kill -9 2>/dev/null || true
-  echo "▸ starting intent router on :8788  (logs → /tmp/intent-router.log)"
+  echo "▸ intent router      :8788  (logs → /tmp/intent-router.log)"
   npm run serve >/tmp/intent-router.log 2>&1 &
-  ROUTER_PID=$!
-  trap '[ -n "$ROUTER_PID" ] && kill "$ROUTER_PID" 2>/dev/null || true' EXIT
+  PIDS+=($!)
 else
-  echo "▸ skipping intent router — run \`npm install\` to enable real execution"
+  echo "▸ skipping intent router — run \`npm install\` to enable"
 fi
 
-# kill any stale server holding the port
-lsof -ti tcp:8000 | xargs kill -9 2>/dev/null || true
+# ── mark-this listener ───────────────────────────────────────────────────────
+mkfifo /tmp/intention.pipe 2>/dev/null || true
+if [ -f node_modules/.bin/tsx ]; then
+  echo "▸ mark-this listener         (output below)"
+  ./listener.sh &
+  PIDS+=($!)
+else
+  echo "▸ skipping listener — run \`npm install\` to enable"
+fi
 
-echo "▸ open http://localhost:8000"
+# ── main HUD (port 8000, foreground) ─────────────────────────────────────────
+echo ""
+echo "  👓 Glasses HUD   → http://localhost:8000"
+echo "  📱 iPhone/glasses → ws://<your-ip>:8000/ws/iphone"
+echo ""
 python server.py

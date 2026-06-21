@@ -11,6 +11,7 @@ const initial = {
   location: null,           // detected current location label
   capMode: 'conversation',  // conversation | solo
   face: null,               // present | absent | off | null
+  rayban: false,            // true while /ws/audio-in is connected
   finals: [],               // [{id, text}]
   interim: '',
   level: 0,
@@ -29,6 +30,7 @@ function reducer(s, a) {
     case 'location': return { ...s, location: a.label }
     case 'capMode': return { ...s, capMode: a.mode, finals: [], interim: '', cards: [], thinking: [], clarify: null, entities: [] }
     case 'face': return { ...s, face: a.state }
+    case 'rayban': return { ...s, rayban: a.on }
     case 'level': return { ...s, level: a.value }
     case 'ttl': return { ...s, ttl: a.n }
     case 'caption':
@@ -114,6 +116,7 @@ export function useAgentSocket() {
           case 'forgotten': clearTTL(); dispatch({ t: 'forget' }); break
           case 'reset': clearTTL(); dispatch({ t: 'reset' }); break
           case 'face': dispatch({ t: 'face', state: m.state }); break
+          case 'rayban': dispatch({ t: 'rayban', on: m.connected }); break
           default: break
         }
       }
