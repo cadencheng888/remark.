@@ -19,11 +19,23 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 import calendar_tool
+import geo
+import router_client
 
 load_dotenv()
 
 TZ_NAME = os.environ.get("LOCAL_TIMEZONE", "America/Los_Angeles")
 client = Anthropic()  # reads ANTHROPIC_API_KEY from env
+
+# Sink the server registers so background results from the agentic router
+# (Browserbase / Agentverse / calendar tier) can be streamed to the HUD after
+# process_transcript() has already returned. Signature: sink(card_text: str).
+_action_sink = None
+
+
+def set_action_sink(fn) -> None:
+    global _action_sink
+    _action_sink = fn
 
 # Tracks recently created events for dedup and cancellation.
 # Each entry: {"event_id": str, "title": str, "start_iso": str, "created_at": float}
@@ -331,6 +343,14 @@ def _now_context() -> str:
     return now.strftime("%A, %Y-%m-%d %H:%M %Z")
 
 
+def _location_context() -> str:
+    label = geo.location_label()
+    if not label:
+        return ""
+    return (f' The wearer is currently in {label}; resolve "near me", "nearby", '
+            f'"around here", "closest", and similar relative places against it.')
+
+
 def build_system_prompt() -> str:
     """The instructions that tell Claude how to decide on actions.
 
@@ -339,7 +359,7 @@ def build_system_prompt() -> str:
     return f"""
 You are a general-purpose assistant embedded in smart glasses. You passively receive transcribed snippets of the wearer's real-world conversations AND direct spoken commands, and you turn ANY actionable intent into an action — across any app or service: calendar, shopping (Amazon), messaging/texts, email, reminders/to-dos, music, maps/directions, phone calls, notes, web search, food orders, smart home, and more. Capture every concrete action you hear; you are NOT limited to the calendar.
 
-Resolve relative dates and times like "6pm", "tonight", "tomorrow", "next Friday", and "in 20 minutes" against the current time: {_now_context()} (timezone {TZ_NAME}).
+Resolve relative dates and times like "6pm", "tonight", "tomorrow", "next Friday", and "in 20 minutes" against the current time: {_now_context()} (timezone {TZ_NAME}).{_location_context()}
 
 You cannot ask the wearer follow-up questions. They are not in a chat and cannot reply. If a plan is clear enough to act on, call the appropriate tool immediately using the best information available. Missing minor details, such as exact location or attendee name, should not prevent action.
 
@@ -717,9 +737,15 @@ def execute_tool(name: str, args: dict) -> str:
             "summary": summary, "created_at": now, "removed": is_removal,
         })
 
-        # No live third-party integration yet — capture the structured intent so
-        # it shows in the HUD. Wire a real executor per app right here when ready
-        # (e.g. Amazon, Twilio/Messages, Spotify, email) keyed on `app`/`action`.
+        # Hand the intent string to the agentic router (src/server.ts -> route()):
+        # a specialized Fetch.ai agent, the calendar tier, or a Browserbase web
+        # agent that can accomplish essentially any web task. It runs in the
+        # background — the optimistic card below shows immediately; the real
+        # outcome streams back via _action_sink when the agent finishes.
+        # Removals/undo aren't dispatched (no executor for reversing a live web
+        # action yet) — they only strike the matching card in the HUD.
+        if not is_removal:
+            router_client.dispatch(summary, sink=_action_sink)
         return f"🧩 {summary}  ·  [{app}/{action}] ⟦{card_key}⟧"
 
     if name == "clarification_needed":

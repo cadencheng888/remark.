@@ -8,6 +8,7 @@ const initial = {
   connected: false,
   status: 'connecting',     // listening | demo running | thinking | idle | disconnected
   calMode: 'mock',          // mock | live (calendar badge)
+  location: null,           // detected current location label
   capMode: 'conversation',  // conversation | solo
   face: null,               // present | absent | off | null
   finals: [],               // [{id, text}]
@@ -15,6 +16,7 @@ const initial = {
   level: 0,
   entities: [],             // recent entity strings (most-recent-first)
   cards: [],                // [{id, key, ...classified}]
+  thinking: [],             // live agentic-router reasoning lines (the trace)
   clarify: null,            // {question, options}
   ttl: 0,                   // privacy countdown
 }
@@ -24,7 +26,8 @@ function reducer(s, a) {
     case 'connected': return { ...s, connected: a.v, status: a.v ? 'idle' : 'disconnected' }
     case 'status': return { ...s, status: a.text, calMode: a.mode || s.calMode }
     case 'calMode': return { ...s, calMode: a.mode }
-    case 'capMode': return { ...s, capMode: a.mode, finals: [], interim: '', cards: [], clarify: null, entities: [] }
+    case 'location': return { ...s, location: a.label }
+    case 'capMode': return { ...s, capMode: a.mode, finals: [], interim: '', cards: [], thinking: [], clarify: null, entities: [] }
     case 'face': return { ...s, face: a.state }
     case 'level': return { ...s, level: a.value }
     case 'ttl': return { ...s, ttl: a.n }
@@ -35,6 +38,13 @@ function reducer(s, a) {
       const next = [...s.entities]
       for (const v of a.values) { if (v && !next.includes(v)) next.unshift(v) }
       return { ...s, entities: next.slice(0, 6) }
+    }
+    case 'thinking': {
+      // The router's first trace line ('intent: "…"') marks a fresh run — start
+      // a new reasoning group instead of appending to the previous one.
+      const fresh = a.text.startsWith('intent:')
+      const lines = fresh ? [a.text] : [...s.thinking, a.text]
+      return { ...s, thinking: lines.slice(-16) }
     }
     case 'clarify': return { ...s, clarify: { question: a.question, options: a.options } }
     case 'action': {
@@ -51,7 +61,7 @@ function reducer(s, a) {
       }
       return { ...s, clarify: null, cards: [{ id: ++cid, ...c }, ...s.cards].slice(0, 6) }
     }
-    case 'forget': return { ...s, finals: [], interim: '', entities: [], cards: [], clarify: null, ttl: 0 }
+    case 'forget': return { ...s, finals: [], interim: '', entities: [], cards: [], thinking: [], clarify: null, ttl: 0 }
     case 'reset': return { ...initial, connected: s.connected, status: 'idle', calMode: s.calMode, capMode: s.capMode }
     default: return s
   }
@@ -99,6 +109,7 @@ export function useAgentSocket() {
           case 'level': dispatch({ t: 'level', value: m.value }); break
           case 'entities': dispatch({ t: 'entities', values: m.values || [] }); break
           case 'action': dispatch({ t: 'action', text: m.text, muted: m.muted }); break
+          case 'thinking': dispatch({ t: 'thinking', text: m.text }); break
           case 'clarify': dispatch({ t: 'clarify', question: m.question, options: m.options || [] }); break
           case 'forgotten': clearTTL(); dispatch({ t: 'forget' }); break
           case 'reset': clearTTL(); dispatch({ t: 'reset' }); break
@@ -108,7 +119,10 @@ export function useAgentSocket() {
       }
     }
     connect()
-    fetch('/config').then((r) => r.json()).then((c) => dispatch({ t: 'calMode', mode: c.mode })).catch(() => {})
+    fetch('/config').then((r) => r.json()).then((c) => {
+      dispatch({ t: 'calMode', mode: c.mode })
+      if (c.location) dispatch({ t: 'location', label: c.location })
+    }).catch(() => {})
     return () => { stop = true; clearTTL(); wsRef.current && wsRef.current.close() }
   }, [bumpTTL, clearTTL])
 

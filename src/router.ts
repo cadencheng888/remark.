@@ -31,9 +31,30 @@ async function tryAgentverse(
   return { selectedAgent: best };
 }
 
+// A trace array that also calls `onLine` the moment each entry is pushed, so a
+// caller can stream the router's reasoning live instead of waiting for the final
+// RouteResult. The tiers below all just `trace.push(...)` as before — they don't
+// need to know anything is listening.
+function makeTrace(onLine?: (line: string) => void): string[] {
+  const arr: string[] = [];
+  if (onLine) {
+    const orig = arr.push.bind(arr);
+    arr.push = (...items: string[]): number => {
+      for (const it of items) onLine(it);
+      return orig(...items);
+    };
+  }
+  return arr;
+}
+
 // Sequential by design: prefer specialized agents, degrade gracefully to web.
-export async function route(intent: RawIntent): Promise<RouteResult> {
-  const trace: string[] = [`intent: "${intent}"`];
+// onTrace (optional) is called with each reasoning line as it happens.
+export async function route(
+  intent: RawIntent,
+  onTrace?: (line: string) => void
+): Promise<RouteResult> {
+  const trace = makeTrace(onTrace);
+  trace.push(`intent: "${intent}"`);
 
   // SMS action tier disabled until twilio_sms.ts is implemented.
   // if (looksLikeSms(intent) && process.env.TWILIO_ACCOUNT_SID) {

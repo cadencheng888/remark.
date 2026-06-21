@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx --env-file=.env src/cli.ts",
+    "serve": "tsx --env-file=.env src/server.ts",
     "build": "tsc"
   },
   "dependencies": {

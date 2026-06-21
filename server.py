@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 
 import agent
 import calendar_tool
+import geo
+import router_client
 from demo import CONVO
 from face_gate import FaceGate
 from transcribe import stream_microphone
@@ -56,12 +58,28 @@ CAL_EMBED = os.environ.get(
 app = FastAPI()
 clients: set[WebSocket] = set()
 
+# The running event loop, captured at startup so background threads (the agentic
+# router's executor) can push result cards back onto the loop thread-safely.
+_main_loop: asyncio.AbstractEventLoop | None = None
+
 # Capture modes (distinct from MODE, which is the calendar mock/live badge):
 #   conversation — passive, only captures when a face is in view (FaceGate)
 #   solo         — only acts on commands prefixed with the wake phrase
 CAPTURE_MODE = "conversation"
 WAKE_PHRASE = "mark this"
 face_gate = FaceGate()
+
+# Solo-mode: a command ending on one of these (a transitive verb or a dangling
+# preposition/article) is probably mid-sentence — wait a little longer for the
+# rest before acting, so "mark this, find … <pause> … EV chargers near me"
+# doesn't fire as just "find".
+SOLO_INCOMPLETE_GRACE = 4.0  # seconds of extra patience for an unfinished command
+_DANGLING_TAIL = {
+    "find", "search", "play", "add", "order", "text", "call", "get", "buy",
+    "remind", "email", "send", "navigate", "set", "make", "show", "look",
+    "book", "schedule", "to", "for", "a", "an", "the", "me", "my", "up", "on",
+    "with", "and", "of", "near",
+}
 
 # --- pipeline buffer (ephemeral: held only until it acts or the moment passes) ---
 SILENCE_FLUSH_SECONDS = 1.5     # quiet gap before we send a flush to the agent
@@ -82,6 +100,40 @@ async def broadcast(msg: dict):
             await ws.send_json(msg)
         except Exception:
             clients.discard(ws)
+
+
+def _emit_router_event(ev: dict):
+    """Thread-safe sink for the agentic router. agent.py's background dispatch
+    threads call this with the router's live reasoning ('thinking') and its final
+    result; we hop back onto the event loop and broadcast to the HUD."""
+    if _main_loop is None:
+        return
+    kind = ev.get("kind")
+    if kind == "thinking":
+        msg = {"type": "thinking", "text": ev.get("text", "")}
+    elif kind == "result":
+        msg = {"type": "action", "text": ev.get("text", "")}
+    else:
+        return
+    asyncio.run_coroutine_threadsafe(broadcast(msg), _main_loop)
+
+
+@app.on_event("startup")
+async def _on_startup():
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+    agent.set_action_sink(_emit_router_event)  # stream router thinking + results
+    # Warm the location cache off the event loop so the first intent isn't
+    # stalled by the IP-geolocation lookup.
+    loc = await asyncio.to_thread(geo.get_location)
+    if loc and loc.get("label"):
+        print("  📍 location:", loc["label"])
+    if router_client.health():
+        print("  ✅ agentic router reachable at", router_client.ROUTER_URL)
+    else:
+        print("  ⚠️  agentic router NOT reachable at", router_client.ROUTER_URL,
+              "— start it with `npm run serve` (perform_action cards still show,",
+              "but won't execute).")
 
 
 def on_final(text: str):
@@ -180,6 +232,17 @@ async def flusher():
                 # heard "mark this" but the command hasn't been spoken yet —
                 # DON'T clear; wait so the next utterance combines with the trigger.
                 continue
+            # The command can be split across a mid-sentence pause. If it still
+            # looks unfinished (one word, or ends on a transitive verb /
+            # preposition), keep waiting a few extra seconds for the rest rather
+            # than firing "find" alone — but give up after the grace so a truly
+            # terse command still acts.
+            words = command.split()
+            tail = words[-1].lower().strip(",.?!;:")
+            unfinished = len(words) < 2 or tail in _DANGLING_TAIL
+            if unfinished and (now - _last_speech) < SOLO_INCOMPLETE_GRACE:
+                _dirty = True  # re-check next tick; combine with any further speech
+                continue
             _transcript = []  # consume the whole trigger + command
             # "mark this" is an explicit do-something signal, so treat whatever
             # follows as an imperative and let Claude infer a missing verb/app
@@ -251,7 +314,12 @@ async def index():
 
 @app.get("/config")
 async def config():
-    return {"mode": MODE, "cal_embed": CAL_EMBED}
+    loc = geo.get_location()
+    return {
+        "mode": MODE,
+        "cal_embed": CAL_EMBED,
+        "location": loc.get("label") if loc else None,
+    }
 
 
 @app.websocket("/ws")

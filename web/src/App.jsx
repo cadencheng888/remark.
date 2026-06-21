@@ -95,6 +95,32 @@ function Thinking() {
   )
 }
 
+function RouterTrace({ lines }) {
+  return (
+    <div className="rounded-xl border border-indigo-400/20 bg-indigo-500/[0.04] px-4 py-3" style={{ animation: 'popIn .35s ease both' }}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" style={{ animation: 'pulseDot 1s infinite' }} />
+        <span className="mono text-[10px] tracking-wide text-indigo-300/80">AGENT · REASONING</span>
+      </div>
+      <div className="flex flex-col gap-1 mono text-[11px] leading-relaxed">
+        {lines.map((l, i) => {
+          const url = (l.match(/https?:\/\/\S+/) || [])[0]
+          return (
+            <div key={i} className="flex gap-1.5" style={{ animation: 'fadeUp .25s ease both' }}>
+              <span className="text-zinc-600 shrink-0">›</span>
+              <span className="text-zinc-400 break-all">
+                {url
+                  ? <>{l.split(url)[0]}<a href={url} target="_blank" rel="noreferrer" className="text-indigo-300 underline">{url}</a></>
+                  : l}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function ActionCard({ c }) {
   return (
     <div
@@ -116,7 +142,7 @@ function ActionCard({ c }) {
 
 export default function App() {
   const { state, send } = useAgentSocket()
-  const { status, calMode, capMode, face, finals, interim, level, entities, cards, clarify, ttl } = state
+  const { status, calMode, capMode, face, finals, interim, level, entities, cards, thinking, clarify, ttl, location } = state
   const [camOpen, setCamOpen] = useState(false)
 
   const st = STATUS[status] || STATUS.idle
@@ -148,6 +174,7 @@ export default function App() {
             <span className={calMode === 'live' ? 'text-emerald-300/90' : 'text-amber-300/90'}>{calMode === 'live' ? 'Live' : 'Mock'}</span>
           </Chip>
           <Chip color="#34d399">{ttl > 0 ? `auto-deletes ${ttl}s` : 'ephemeral'}</Chip>
+          {location && <Chip color="#38bdf8">📍 {location}</Chip>}
           <div className="flex items-center rounded-lg border border-white/10 overflow-hidden text-[13px]">
             {[['conversation', 'Conversation'], ['solo', 'Solo']].map(([m, label]) => (
               <button
@@ -223,7 +250,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            ) : cards.length ? (
+            ) : (cards.length || thinking.length) ? (
               <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2.5">
                 {status === 'thinking' && (
                   <div className="flex items-center gap-2 text-zinc-500 text-[12px] mb-1">
@@ -231,6 +258,7 @@ export default function App() {
                   </div>
                 )}
                 {cards.map((c) => <ActionCard key={c.id} c={c} />)}
+                {thinking.length > 0 && <RouterTrace lines={thinking} />}
               </div>
             ) : (
               <div className="flex-1 grid place-items-center">{status === 'thinking' ? <Thinking /> : <Idle />}</div>
